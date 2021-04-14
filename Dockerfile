@@ -1,0 +1,45 @@
+FROM mcr.microsoft.com/dotnet/sdk:5.0-alpine AS build
+
+ENV PORT 8080
+ENV SSH_PORT 2222
+
+WORKDIR /source
+
+# copy csproj and restore as distinct layers
+COPY *.sln .
+COPY appsvcdemobyos/*.csproj ./appsvcdemobyos/
+RUN dotnet restore -r linux-musl-x64
+
+# copy everything else and build app
+COPY appsvcdemobyos/. ./appsvcdemobyos/
+WORKDIR /source/appsvcdemobyos
+RUN dotnet publish -c release -o /app -r linux-musl-x64 --self-contained false --no-restore
+
+# final stage/image
+FROM mcr.microsoft.com/dotnet/aspnet:5.0-alpine-amd64
+WORKDIR /app
+COPY --from=build /app ./
+
+ADD init_container.sh /bin/init_container.sh
+ADD sshd_config /etc/ssh/
+
+# Update permissions	
+RUN chmod 755 /bin/init_container.sh
+RUN apk add --update openssh-server tzdata openrc openssl \
+        && echo "root:Docker!" | chpasswd \
+        && rm -rf /var/cache/apk/* \
+        # Remove unnecessary services
+        && rm -f /etc/init.d/hwdrivers \
+                 /etc/init.d/hwclock \
+                 /etc/init.d/mtab \
+                 /etc/init.d/bootmisc \
+                 /etc/init.d/modules \
+                 /etc/init.d/modules-load \
+                 /etc/init.d/modloop \
+        # Can't do cgroups
+        && sed -i 's/\tcgroup_add_service/\t#cgroup_add_service/g' /lib/rc/sh/openrc-run.sh \
+        && apk add --no-cache bash; 
+        
+EXPOSE 8080 2222
+# ENTRYPOINT ["dotnet", "appsvcdemobyos.dll"]
+ENTRYPOINT ["/bin/init_container.sh"]
